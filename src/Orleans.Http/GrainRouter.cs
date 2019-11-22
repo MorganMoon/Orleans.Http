@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Reflection;
 using System.Threading.Tasks;
@@ -13,10 +14,10 @@ namespace Orleans.Http
 {
     internal class GrainRouter
     {
-        private IServiceProvider _serviceProvider;
+        private readonly IServiceProvider _serviceProvider;
         private readonly IClusterClient _clusterClient;
         private readonly ILogger _logger;
-        private readonly Dictionary<string, GrainInvoker> _routes = new Dictionary<string, GrainInvoker>(StringComparer.InvariantCultureIgnoreCase);
+        private readonly Dictionary<GrainRoute, GrainInvoker> _routes = new Dictionary<GrainRoute, GrainInvoker>();
 
         public GrainRouter(IServiceProvider serviceProvider, ILoggerFactory loggerFactory)
         {
@@ -25,21 +26,24 @@ namespace Orleans.Http
             this._logger = loggerFactory.CreateLogger<GrainRouter>();
         }
 
-        public bool RegisterRoute(string pattern, MethodInfo method)
+        public bool RegisterRoute(string pattern, string httpMethod, MethodInfo method)
         {
-            if (this._routes.ContainsKey(pattern)) return false;
+            var grainRoute = new GrainRoute(pattern, httpMethod);
+            if (this._routes.ContainsKey(grainRoute)) return false;
             var grainInterfaceType = method.DeclaringType;
             var grainIdType = this.GetGrainIdType(grainInterfaceType);
-            this._routes[pattern] = new GrainInvoker(this._serviceProvider, grainIdType, method);
+            this._routes[grainRoute] = new GrainInvoker(this._serviceProvider, grainIdType, method);
             return true;
         }
 
         public Task Dispatch(HttpContext context)
         {
             var endpoint = (RouteEndpoint)context.GetEndpoint();
+            var httpMethod = context.Request?.Method ?? "*";
             var pattern = endpoint.RoutePattern;
+            var groundRoute = new GrainRoute(pattern.RawText, httpMethod);
             // At this point we are sure we have a patter and an invoker since a route was match for that particular endpoint
-            var invoker = this._routes[pattern.RawText];
+            var invoker = this._routes[groundRoute];
 
             IGrain grain = this.GetGrain(pattern, invoker.GrainType, invoker.GrainIdType, context);
 
@@ -104,6 +108,61 @@ namespace Orleans.Http
             else
             {
                 return GrainIdType.String;
+            }
+        }
+
+        private struct GrainRoute : IEquatable<GrainRoute>
+        {
+            public string Pattern { get; }
+            public string HttpMethod { get; }
+
+            public GrainRoute(string pattern, string httpMethod)
+            {
+                Pattern = pattern;
+                HttpMethod = httpMethod;
+            }
+
+            public override bool Equals(object obj)
+            {
+                if (obj == null)
+                {
+                    return false;
+                }
+                return obj is GrainRoute && Equals((GrainRoute)obj);
+            }
+
+            public override int GetHashCode()
+            {
+                return Pattern.GetHashCode() ^ HttpMethod.GetHashCode();
+            }
+
+            public bool Equals([AllowNull] GrainRoute other)
+            {
+                if(other == null)
+                {
+                    return false;
+                }
+
+                return Pattern == other.Pattern && HttpMethodEquals(HttpMethod, other.HttpMethod);
+            }
+
+            public static bool operator ==(GrainRoute x, GrainRoute y)
+            {
+                return x.Equals(y);
+            }
+            public static bool operator !=(GrainRoute x, GrainRoute y)
+            {
+                return !(x == y);
+            }
+
+            private bool HttpMethodEquals(string firstHttpMethod, string secondHttpMethod)
+            {
+                if(firstHttpMethod == "*" || secondHttpMethod == "*")
+                {
+                    return true;
+                }
+
+                return firstHttpMethod == secondHttpMethod;
             }
         }
     }
